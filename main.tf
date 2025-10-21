@@ -21,10 +21,13 @@ terraform {
 provider "aws" {
   region = "us-east-1"
 }
+
+/*
 //fetches the latest Amazon Linux 2023 x86_64 AMI
 data "aws_ssm_parameter" "al2023_x86" {
   name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 }
+*/
 /*
 // creates a tiny free-tier EC2 instance
 resource "aws_instance" "vm" {
@@ -50,14 +53,17 @@ terraform {
   }
 }
 
+/*
 //creates a subnet
 data "aws_subnet" "private_subnet" {
   id = "subnet-04f024821ad29e4ee"
 }
+/*
 
 //basically creating a firewall that only allows 
 //traffic on port 80 to reach my EC2 instance, 
 //but only from within my subnet that i created above
+/*
 resource "aws_security_group" "ec2_sg" {
   vpc_id = data.aws_subnet.private_subnet.vpc_id
 
@@ -68,9 +74,13 @@ resource "aws_security_group" "ec2_sg" {
     protocol    = "tcp"
   }
 }
-
+*/
 //attaching the firewall that we created to the ec2 instance that
-//we created
+//we created. this basically means that this vm can only be
+//accessed by only port 80 so this is http server only
+//unless you are weird and assign another protocol to port 80
+
+/*
 resource "aws_instance" "vm" {
   ami           = data.aws_ssm_parameter.al2023_x86.value
   instance_type = "t3.micro"
@@ -78,4 +88,11 @@ resource "aws_instance" "vm" {
   tags = {
     Name = "My first EC2 instance"
   }
+}
+*/
+
+//basically tellling Terraform to use the code that i created in the module
+//"custom_ec2"
+module "custom_ec2" {
+  source = "./modules/custom-ec2"
 }
