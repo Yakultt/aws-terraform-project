@@ -1,0 +1,21 @@
+# Terraform local cache & providers (never commit)
+.terraform/
+.terraformrc
+terraform.rc
+
+# State files (sensitive)
+terraform.tfstate
+terraform.tfstate.*
+*.tfstate.backup
+
+# Vars that might hold secrets
+*.tfvars
+*.tfvars.json
+
+# Crash logs & local overrides
+.crash
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
