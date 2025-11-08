@@ -14,6 +14,7 @@ terraform {
   }
 }
 
+
 //tells terraform configuration info about the aws provider 
 //tells it when creating anything from the aws provider, you put it in the 
 //region us-east-1
@@ -22,77 +23,150 @@ provider "aws" {
   region = "us-east-1"
 }
 
-/*
-//fetches the latest Amazon Linux 2023 x86_64 AMI
-data "aws_ssm_parameter" "al2023_x86" {
-  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
-}
-*/
-/*
-// creates a tiny free-tier EC2 instance
-resource "aws_instance" "vm" {
-  ami           = data.aws_ssm_parameter.al2023_x86.value
-  instance_type = "t3.micro"
-
+#creates the network ip address
+resource "aws_vpc" "main_vpc" {
+  cidr_block = "10.0.0.0/16"
   tags = {
-    Name        = "tf-demo"
-    Owner       = "Jay"
-    Environment = "dev"
+    Name = "main-vpc"
   }
 }
-*/
-//this creates a remote backend where i can store my state file into a 
-//s3 bucket so that this is a team-ready infrastructure.
-//this makes it so that multiple people can safely use terraform at the same time.
-
-terraform {
-  backend "s3" {
-    bucket = "jays-terraform-aws-state"
-    key    = "terraform.tfstate"
-    region = "us-east-1"
+#connects the vpc to the internet
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.main_vpc.id
+  tags = {
+    Name = "main-igw"
   }
 }
 
-/*
-//creates a subnet
-data "aws_subnet" "private_subnet" {
-  id = "subnet-04f024821ad29e4ee"
+#creates a subnet within the network ip address that I
+#created above so that the ec2 instances i launch will
+#have this ip address
+resource "aws_subnet" "public_subnet" {
+  vpc_id                  = aws_vpc.main_vpc.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = "us-east-1a"
+  #makes sure that every ec2 instance gets internet access
+  #whenever they launch
+  map_public_ip_on_launch = true
+  tags = {
+    Name = "public-subnet"
+  }
 }
-/*
 
-//basically creating a firewall that only allows 
-//traffic on port 80 to reach my EC2 instance, 
-//but only from within my subnet that i created above
-/*
-resource "aws_security_group" "ec2_sg" {
-  vpc_id = data.aws_subnet.private_subnet.vpc_id
+resource "aws_route_table" "public_rt" {
+  #attaches the route table to my vpc
+  vpc_id = aws_vpc.main_vpc.id
+
+  route {
+    #0.0.0.0/0 captures all traffic so any traffic going anywhere should
+    #go to the internet gateway that i created
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.igw.id
+  }
+}
+
+#attaching the route table to my subnet so that the subnet
+#can actually use it
+resource "aws_route_table_association" "public_rt_association" {
+  subnet_id      = aws_subnet.public_subnet.id
+  route_table_id = aws_route_table.public_rt.id
+}
+
+#attaching my public key to the ec2 instance so i can login
+#via a ssh key and not password
+resource "aws_key_pair" "existing_key" {
+  key_name   = "harit-macbook-key"
+  public_key = file("~/.ssh/id_ed25519.pub")
+}
+
+#creating firewall rules for ec2 instance
+resource "aws_security_group" "allow_ssh_http_https" {
+  vpc_id = aws_vpc.main_vpc.id
 
   ingress {
-    cidr_blocks = [data.aws_subnet.private_subnet.cidr_block]
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
-}
-*/
-//attaching the firewall that we created to the ec2 instance that
-//we created. this basically means that this vm can only be
-//accessed by only port 80 so this is http server only
-//unless you are weird and assign another protocol to port 80
 
-/*
-resource "aws_instance" "vm" {
-  ami           = data.aws_ssm_parameter.al2023_x86.value
-  instance_type = "t3.micro"
-  vpc_security_group_ids = [aws_security_group.ec2_sg.id]
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   tags = {
-    Name = "My first EC2 instance"
+    Name = "allow-ssh-https-http"
   }
 }
-*/
 
-//basically tellling Terraform to use the code that i created in the module
-//"custom_ec2"
-module "custom_ec2" {
-  source = "./modules/custom-ec2"
+resource "aws_instance" "ubuntu_instance" {
+  ami                         = "ami-0a0e5d9c7acc336f1"
+  instance_type               = "t3.micro"
+  subnet_id                   = aws_subnet.public_subnet.id
+  vpc_security_group_ids      = [aws_security_group.allow_ssh_http_https.id]
+  key_name                    = aws_key_pair.existing_key.key_name
+  associate_public_ip_address = true
+  #makes sure that the firewall rules and the internet gateway is created before creating this instance
+  depends_on = [
+    aws_security_group.allow_ssh_http_https,
+    aws_internet_gateway.igw
+  ]
+  #the startup script that runs automatically whenvever an instance is created
+user_data = <<-EOF
+#!/bin/bash
+apt update -y
+apt upgrade -y
+apt install -y nginx git
+useradd -m -s /bin/bash jay
+usermod -aG sudo jay
+#clone my ctf files repo
+cd /tmp
+git clone https://github.com/Yakultt/CTF-Blog-Post.git
+#move the website files into nginx's root directory
+cp -r /tmp/CTF-Blog-Post/* /var/www/html/
+#editing the nginx config file so that nginx will make it so that the server name is haritsook
+cat <<EOT > /etc/nginx/sites-available/default
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    server_name haritsook.com www.haritsook.com;
+
+    root /var/www/html;
+    index index.html;
+
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+}
+EOT
+systemctl restart nginx
+
+EOF
+
+  tags = {
+    Name = "ubuntu-instance"
+  }
+}
+
+#outputting the ip address address of the ec2 instance i made so that i can ssh into it right away
+output "ubuntu_instance_public_ip" {
+  value = aws_instance.ubuntu_instance.public_ip
 }
